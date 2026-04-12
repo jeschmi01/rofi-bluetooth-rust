@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-btleplug = "0.12.0"
 notify-rust = "4.14.0"
 rofi = "0.4.0"
 tokio = { version = "1.51.1", features = ["full"] }
 futures = "0.3"
+bluer = { version = "0.17.4", features = ["full"] }

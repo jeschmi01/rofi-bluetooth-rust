@@ -1,66 +1,108 @@
-use btleplug::api::{
-    Central, CentralEvent, Manager as _, Peripheral as _, PeripheralProperties as _, ScanFilter,
-};
-use btleplug::platform::{Adapter, Manager, Peripheral};
+use bluer::mesh::element;
+use bluer::{Adapter, AdapterEvent, Session};
 use futures::stream::StreamExt;
 use notify_rust::Notification;
 use rofi::Rofi;
-use std::collections::HashSet;
 use std::error::Error;
 use std::time::Duration;
-use tokio::time;
 
-async fn update_device_names(
-    central: &Adapter,
-    device_names: &mut HashSet<String>,
+struct DeviceDescription {
+    icon: String,
+    name: String,
+    mac_addr: String,
+}
+
+struct Options {
+    name: String,
+    aktive: bool,
+}
+
+impl ToString for DeviceDescription {
+    fn to_string(&self) -> String {
+        format!("{} {} | {}", self.icon, self.name, self.mac_addr)
+    }
+}
+
+fn get_icon(icon_name: &str) -> &'static str {
+    match icon_name {
+        "audio-headphones" | "audio-headset" => "󰋋",
+        "audio-card" | "audio-speakers" => "󰓃",
+        "input-mouse" => "󰍽",
+        "input-keyboard" => "󰌌",
+        "input-gaming" => "󰊴",
+        "phone" => "󰏲",
+        "computer" | "laptop" => "󰟀",
+        "video-display" | "tv" => "󰗑",
+        "camera-video" => "󰄀",
+        _ => "",
+    }
+}
+
+async fn get_device_names(
+    adapter: &Adapter,
+    devices: &mut Vec<DeviceDescription>,
+    scan: bool,
 ) -> Result<(), Box<dyn Error>> {
-    let mut devices = central.events().await?;
-    while let Some(device) = devices.next().await {
-        match device {
-            CentralEvent::DeviceDiscovered(id) => {
-                let periphal = central.peripheral(&id).await?;
-                if let Some(props) = periphal.properties().await? {
-                    let name = props.local_name.unwrap_or_else(|| "Unknown".to_string());
-                    println!("{}", name);
-                    device_names.insert(name);
+    if scan {
+        let mut discover = adapter.discover_devices().await?;
+        while let Some(evt) = discover.next().await {
+            match evt {
+                AdapterEvent::DeviceAdded(addr) => {
+                    let device = adapter.device(addr)?;
+                    let name = device.name().await?.unwrap_or_else(|| addr.to_string());
+                    let icon_name = device.icon().await?.unwrap_or_default();
+                    println!("{icon_name} {name}");
+                    let device_description = DeviceDescription {
+                        icon: String::from(get_icon(&icon_name)),
+                        name,
+                        mac_addr: addr.to_string(),
+                    };
+                    devices.push(device_description);
                 }
+                _ => (),
             }
-            _ => (),
+        }
+    } else {
+        let devices_addrs = adapter.device_addresses().await?;
+        for addr in devices_addrs {
+            if let Ok(device) = adapter.device(addr) {
+                let name = device.name().await?.unwrap_or_else(|| addr.to_string());
+                let icon_name = device.icon().await?.unwrap_or_default();
+                println!("{icon_name} {name}");
+                let device_description = DeviceDescription {
+                    icon: String::from(get_icon(&icon_name)),
+                    name,
+                    mac_addr: addr.to_string(),
+                };
+                devices.push(device_description);
+            }
         }
     }
+
     Ok(())
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let mut device_names: HashSet<String> = HashSet::new();
+    let session = Session::new().await?;
+    let adapter = session.default_adapter().await?;
+    adapter.set_powered(true).await?;
 
-    let manager = Manager::new().await.unwrap();
-    let adapters = manager.adapters().await?;
-    let central = adapters
-        .into_iter()
-        .nth(0)
-        .ok_or("No Bluetooth Adapter found")?;
+    let mut devices = Vec::new();
 
-    tokio::time::timeout(
+    let _ = tokio::time::timeout(
         Duration::from_secs(5),
-        update_device_names(&central, &mut device_names),
+        get_device_names(&adapter, &mut devices, true),
     )
     .await;
 
-    let names: Vec<String> = device_names.into_iter().collect();
+    let mut element_strings: Vec<String> = devices.iter().map(|d| d.to_string()).collect();
+    element_strings.reverse();
+    element_strings.push("------".to_string());
+    element_strings.push("Power: On".to_string());
+    element_strings.push("Scan: On".to_string());
 
-    if names.is_empty() {
-        println!("Keine Geräte gefunden. Scannt der Adapter noch?");
-        return Ok(());
-    }
-
-    let devices = vec![
-        "󰋋 Kopfhörer | 00:11:22:33:44:55".to_string(),
-        "󰍽 Maus | AA:BB:CC:DD:EE:FF".to_string(),
-    ];
-
-    match Rofi::new(&names).prompt(" Bluetooth").run() {
+    match Rofi::new(&element_strings).prompt(" Bluetooth").run() {
         Ok(choice) => {
             Notification::new()
                 .summary(" Bluetooth")
