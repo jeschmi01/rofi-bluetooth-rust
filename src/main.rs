@@ -1,4 +1,3 @@
-use bluer::mesh::element;
 use bluer::{Adapter, AdapterEvent, Session};
 use futures::stream::StreamExt;
 use notify_rust::Notification;
@@ -12,9 +11,25 @@ struct DeviceDescription {
     mac_addr: String,
 }
 
-struct Options {
+struct BltSetting {
     name: String,
-    aktive: bool,
+    active: bool,
+}
+
+impl BltSetting {
+    fn toggle(&mut self) {
+        self.active = !self.active;
+    }
+}
+
+impl ToString for BltSetting {
+    fn to_string(&self) -> String {
+        if self.active {
+            format!("{}: on", self.name)
+        } else {
+            format!("{}: off", self.name)
+        }
+    }
 }
 
 impl ToString for DeviceDescription {
@@ -38,7 +53,7 @@ fn get_icon(icon_name: &str) -> &'static str {
     }
 }
 
-async fn get_device_names(
+async fn scan_device_names(
     adapter: &Adapter,
     devices: &mut Vec<DeviceDescription>,
     scan: bool,
@@ -57,7 +72,12 @@ async fn get_device_names(
                         name,
                         mac_addr: addr.to_string(),
                     };
-                    devices.push(device_description);
+                    if !devices
+                        .iter()
+                        .any(|d| d.mac_addr == device_description.mac_addr)
+                    {
+                        devices.push(device_description);
+                    }
                 }
                 _ => (),
             }
@@ -74,11 +94,15 @@ async fn get_device_names(
                     name,
                     mac_addr: addr.to_string(),
                 };
-                devices.push(device_description);
+                if !devices
+                    .iter()
+                    .any(|d| d.mac_addr == device_description.mac_addr)
+                {
+                    devices.push(device_description);
+                }
             }
         }
     }
-
     Ok(())
 }
 
@@ -88,31 +112,78 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let adapter = session.default_adapter().await?;
     adapter.set_powered(true).await?;
 
-    let mut devices = Vec::new();
+    let mut options: Vec<BltSetting> = vec!["Power", "Scan", "Pairable", "Discoverable"]
+        .into_iter()
+        .map(|o| BltSetting {
+            name: o.to_string(),
+            active: false,
+        })
+        .collect();
 
+    options[0].toggle();
+
+    let mut devices: Vec<DeviceDescription> = Vec::new();
     let _ = tokio::time::timeout(
         Duration::from_secs(5),
-        get_device_names(&adapter, &mut devices, true),
+        scan_device_names(&adapter, &mut devices, options[1].active),
     )
     .await;
 
-    let mut element_strings: Vec<String> = devices.iter().map(|d| d.to_string()).collect();
-    element_strings.reverse();
-    element_strings.push("------".to_string());
-    element_strings.push("Power: On".to_string());
-    element_strings.push("Scan: On".to_string());
+    loop {
+        let mut options_names: Vec<String> =
+            options.iter().map(|o: &BltSetting| o.to_string()).collect();
 
-    match Rofi::new(&element_strings).prompt(" Bluetooth").run() {
-        Ok(choice) => {
-            Notification::new()
-                .summary(" Bluetooth")
-                .body(&format!("Connected to device: {}", choice))
-                .show()
-                .unwrap();
+        let mut element_names: Vec<String> = devices
+            .iter()
+            .map(|d: &DeviceDescription| d.to_string())
+            .collect();
+        element_names.reverse();
+
+        let seperator_index = element_names.len();
+        element_names.push("------".to_string());
+
+        element_names.append(&mut options_names);
+        element_names.push("Exit".to_string());
+
+        match Rofi::new(&element_names).prompt(" Bluetooth").run_index() {
+            Ok(index) => {
+                if index < seperator_index {
+                    let device_idx = seperator_index - 1 - index;
+                    let selected_device = &devices[device_idx];
+                    println!("Connect: {}", selected_device.name);
+                } else if index > seperator_index {
+                    let opt_idx = index - seperator_index - 1;
+                    let selected_option = &mut options[opt_idx];
+                    selected_option.toggle();
+                    println!(
+                        "{} ist toggled to {}",
+                        selected_option.name, selected_option.active
+                    );
+                    match selected_option.name.as_str() {
+                        "Scan" => {
+                            let _ = tokio::time::timeout(
+                                Duration::from_secs(2),
+                                scan_device_names(&adapter, &mut devices, selected_option.active),
+                            )
+                            .await;
+                        }
+                        _ => (),
+                    };
+                    element_names[index] = selected_option.to_string();
+                } else if index == element_names.len() - 1 {
+                    println!("Exit");
+                    break;
+                }
+            }
+            Err(rofi::Error::Interrupted) => {
+                println!("Abgebrochen");
+                break;
+            }
+            Err(e) => {
+                eprintln!("Fehler: {}", e);
+                break;
+            }
         }
-        Err(rofi::Error::Interrupted) => println!("Abgebrochen"),
-        Err(e) => eprintln!("Fehler: {}", e),
     }
-
     Ok(())
 }
