@@ -1,109 +1,55 @@
-use bluer::{Adapter, AdapterEvent, Session};
-use futures::stream::StreamExt;
+mod bluetooth;
+mod types;
+
+use crate::bluetooth::{connect_device, scan_device};
+use crate::types::{BltSetting, DeviceDescription};
+
+use bluer::{Adapter, Session};
 use notify_rust::Notification;
 use rofi::Rofi;
 use std::error::Error;
 use std::time::Duration;
 
-struct DeviceDescription {
-    icon: String,
-    name: String,
-    mac_addr: String,
-}
-
-struct BltSetting {
-    name: String,
-    active: bool,
-}
-
-impl BltSetting {
-    fn toggle(&mut self) {
-        self.active = !self.active;
-    }
-}
-
-impl ToString for BltSetting {
-    fn to_string(&self) -> String {
-        if self.active {
-            format!("{}: on", self.name)
-        } else {
-            format!("{}: off", self.name)
-        }
-    }
-}
-
-impl ToString for DeviceDescription {
-    fn to_string(&self) -> String {
-        format!("{} {} | {}", self.icon, self.name, self.mac_addr)
-    }
-}
-
-fn get_icon(icon_name: &str) -> &'static str {
-    match icon_name {
-        "audio-headphones" | "audio-headset" => "󰋋",
-        "audio-card" | "audio-speakers" => "󰓃",
-        "input-mouse" => "󰍽",
-        "input-keyboard" => "󰌌",
-        "input-gaming" => "󰊴",
-        "phone" => "󰏲",
-        "computer" | "laptop" => "󰟀",
-        "video-display" | "tv" => "󰗑",
-        "camera-video" => "󰄀",
-        _ => "",
-    }
-}
-
-async fn scan_device_names(
+async fn show_decive_menu(
+    prompt: String,
     adapter: &Adapter,
-    devices: &mut Vec<DeviceDescription>,
-    scan: bool,
-) -> Result<(), Box<dyn Error>> {
-    if scan {
-        let mut discover = adapter.discover_devices().await?;
-        while let Some(evt) = discover.next().await {
-            match evt {
-                AdapterEvent::DeviceAdded(addr) => {
-                    let device = adapter.device(addr)?;
-                    let name = device.name().await?.unwrap_or_else(|| addr.to_string());
-                    let icon_name = device.icon().await?.unwrap_or_default();
-                    println!("{icon_name} {name}");
-                    let device_description = DeviceDescription {
-                        icon: String::from(get_icon(&icon_name)),
-                        name,
-                        mac_addr: addr.to_string(),
-                    };
-                    if !devices
-                        .iter()
-                        .any(|d| d.mac_addr == device_description.mac_addr)
-                    {
-                        devices.push(device_description);
-                    }
-                }
-                _ => (),
-            }
-        }
-    } else {
-        let devices_addrs = adapter.device_addresses().await?;
-        for addr in devices_addrs {
-            if let Ok(device) = adapter.device(addr) {
-                let name = device.name().await?.unwrap_or_else(|| addr.to_string());
-                let icon_name = device.icon().await?.unwrap_or_default();
-                println!("{icon_name} {name}");
-                let device_description = DeviceDescription {
-                    icon: String::from(get_icon(&icon_name)),
-                    name,
-                    mac_addr: addr.to_string(),
-                };
-                if !devices
-                    .iter()
-                    .any(|d| d.mac_addr == device_description.mac_addr)
-                {
-                    devices.push(device_description);
+    device_description: &mut DeviceDescription,
+) {
+    loop {
+        let mut element_names: Vec<String> = device_description
+            .status
+            .to_string()
+            .split('\n')
+            .map(|s| s.to_string())
+            .collect();
+
+        element_names.push("-------".to_string());
+        element_names.push("Back".to_string());
+        element_names.push("Exit".to_string());
+
+        match Rofi::new(&element_names)
+            .prompt(prompt.as_str())
+            .run_index()
+        {
+            Ok(index) => {
+                let selected_option = element_names[index].as_str();
+                if selected_option.starts_with("Connected") {
+                    let _ = connect_device(device_description, adapter).await;
+                } else if selected_option.starts_with("Paired") {
+                    let _ = connect_device(device_description, adapter).await;
+                } else if selected_option.starts_with("Trusted") {
+                    let _ = connect_device(device_description, adapter).await;
+                } else if selected_option.starts_with("Back") {
+                    break;
+                } else if selected_option.starts_with("Exit") {
+                    std::process::exit(0);
+                } else {
+                    continue;
                 }
             }
+            _ => (),
         }
     }
-    Ok(())
 }
 
 #[tokio::main]
@@ -125,7 +71,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut devices: Vec<DeviceDescription> = Vec::new();
     let _ = tokio::time::timeout(
         Duration::from_secs(5),
-        scan_device_names(&adapter, &mut devices, options[1].active),
+        scan_device(&adapter, &mut devices, options[1].active),
     )
     .await;
 
@@ -145,12 +91,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
         element_names.append(&mut options_names);
         element_names.push("Exit".to_string());
 
-        match Rofi::new(&element_names).prompt(" Bluetooth").run_index() {
+        match Rofi::new(&element_names)
+            .prompt(" Bluetooth | ")
+            .run_index()
+        {
             Ok(index) => {
-                if index < seperator_index {
+                if index == element_names.len() - 1 {
+                    println!("Exit");
+                    break;
+                } else if index < seperator_index {
                     let device_idx = seperator_index - 1 - index;
-                    let selected_device = &devices[device_idx];
-                    println!("Connect: {}", selected_device.name);
+                    let selected_device = &mut devices[device_idx];
+                    let prompt = format!(
+                        "{} {} | ",
+                        selected_device.icon.as_str(),
+                        selected_device.name.as_str()
+                    );
+                    show_decive_menu(prompt, &adapter, selected_device).await;
                 } else if index > seperator_index {
                     let opt_idx = index - seperator_index - 1;
                     let selected_option = &mut options[opt_idx];
@@ -163,16 +120,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         "Scan" => {
                             let _ = tokio::time::timeout(
                                 Duration::from_secs(2),
-                                scan_device_names(&adapter, &mut devices, selected_option.active),
+                                scan_device(&adapter, &mut devices, selected_option.active),
                             )
                             .await;
                         }
                         _ => (),
                     };
-                    element_names[index] = selected_option.to_string();
-                } else if index == element_names.len() - 1 {
-                    println!("Exit");
-                    break;
                 }
             }
             Err(rofi::Error::Interrupted) => {
