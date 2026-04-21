@@ -1,8 +1,24 @@
 use crate::types::{DeviceDescription, DeviceStatus, get_icon};
 
-use bluer::{Adapter, AdapterEvent};
+use bluer::{Adapter, AdapterEvent, Device};
 use futures::StreamExt;
+use notify_rust::{Notification, Timeout, Urgency};
 use std::error::Error;
+
+fn show_notficiation(body: String, is_error: bool) {
+    let mut notification = Notification::new();
+    notification
+        .summary("Bluetooth")
+        .body(body.as_str())
+        .icon("network-bluetooth")
+        .timeout(Timeout::Milliseconds(2000));
+    if is_error {
+        notification.urgency(Urgency::Critical);
+    } else {
+        notification.urgency(Urgency::Normal);
+    }
+    let _ = notification.show();
+}
 
 pub async fn scan_device(
     adapter: &Adapter,
@@ -59,27 +75,40 @@ pub async fn scan_device(
     Ok(())
 }
 
-pub async fn connect_device(
-    device_description: &mut DeviceDescription,
-    adapter: &Adapter,
-) -> Result<(), Box<dyn Error>> {
-    let device = adapter.device(device_description.addr)?;
-    if !device_description.status.connected {
-        let mut retries = 2;
-        loop {
-            match device.connect().await {
-                Ok(()) => break,
-                Err(err) if retries > 0 => {
-                    println!("    Connect error: {}", &err);
-                    retries -= 1;
-                }
-                Err(err) => return Err(Box::new(err)),
+pub async fn connect_device(device_description: &mut DeviceDescription, device: &mut Device) {
+    let mut retries = 2;
+    loop {
+        match device.connect().await {
+            Ok(()) => break,
+            Err(_) if retries > 0 => {
+                retries -= 1;
+            }
+            Err(err) => {
+                let msg = format!("Connection to {} failed {}", device_description.name, err);
+                show_notficiation(msg, true);
+                return;
             }
         }
-        device_description.status.toogle_connect();
-        println!(" Connected");
-    } else {
-        println!("Already connected");
     }
-    Ok(())
+    device_description.status.toogle_connect();
+    let msg = format!("Connected: {}", device_description.name);
+    show_notficiation(msg, false);
+    return;
+}
+
+pub async fn disconnect_device(device_description: &mut DeviceDescription, device: &mut Device) {
+    match device.disconnect().await {
+        Ok(()) => {
+            let msg = format!("Disconnected: {}", device_description.name);
+            device_description.status.toogle_connect();
+            show_notficiation(msg, false);
+        }
+        Err(err) => {
+            let msg = format!(
+                "Disconnection from {} failed {}",
+                device_description.name, err
+            );
+            show_notficiation(msg, true);
+        }
+    }
 }

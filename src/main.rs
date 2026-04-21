@@ -1,18 +1,17 @@
 mod bluetooth;
 mod types;
 
-use crate::bluetooth::{connect_device, scan_device};
+use crate::bluetooth::{connect_device, disconnect_device, scan_device};
 use crate::types::{BltSetting, DeviceDescription};
 
-use bluer::{Adapter, Session};
-use notify_rust::Notification;
+use bluer::{Device, Session};
 use rofi::Rofi;
 use std::error::Error;
 use std::time::Duration;
 
 async fn show_decive_menu(
     prompt: String,
-    adapter: &Adapter,
+    device: &mut Device,
     device_description: &mut DeviceDescription,
 ) {
     loop {
@@ -34,11 +33,15 @@ async fn show_decive_menu(
             Ok(index) => {
                 let selected_option = element_names[index].as_str();
                 if selected_option.starts_with("Connected") {
-                    let _ = connect_device(device_description, adapter).await;
+                    if !device_description.status.connected {
+                        connect_device(device_description, device).await;
+                    } else {
+                        disconnect_device(device_description, device).await;
+                    }
                 } else if selected_option.starts_with("Paired") {
-                    let _ = connect_device(device_description, adapter).await;
+                    continue;
                 } else if selected_option.starts_with("Trusted") {
-                    let _ = connect_device(device_description, adapter).await;
+                    continue;
                 } else if selected_option.starts_with("Back") {
                     break;
                 } else if selected_option.starts_with("Exit") {
@@ -101,13 +104,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     break;
                 } else if index < seperator_index {
                     let device_idx = seperator_index - 1 - index;
-                    let selected_device = &mut devices[device_idx];
+                    let device_description = &mut devices[device_idx];
                     let prompt = format!(
                         "{} {} | ",
-                        selected_device.icon.as_str(),
-                        selected_device.name.as_str()
+                        device_description.icon.as_str(),
+                        device_description.name.as_str()
                     );
-                    show_decive_menu(prompt, &adapter, selected_device).await;
+                    let mut device = adapter.device(device_description.addr)?;
+                    show_decive_menu(prompt, &mut device, device_description).await;
                 } else if index > seperator_index {
                     let opt_idx = index - seperator_index - 1;
                     let selected_option = &mut options[opt_idx];
